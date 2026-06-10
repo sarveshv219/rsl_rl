@@ -1,4 +1,4 @@
-# RSL-RL
+# RSL-RL v3.1.2
 
 A fast and simple implementation of learning algorithms for robotics. For an overview of the library please have a look at https://arxiv.org/pdf/2509.10771.
 
