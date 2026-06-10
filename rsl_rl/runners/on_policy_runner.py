@@ -14,7 +14,7 @@ from collections import deque
 from tensordict import TensorDict
 
 import rsl_rl
-from rsl_rl.algorithms import PPO
+from rsl_rl.algorithms import PPO, PPOWithBC
 from rsl_rl.env import VecEnv
 from rsl_rl.modules import ActorCritic, ActorCriticRecurrent, resolve_rnd_config, resolve_symmetry_config
 from rsl_rl.utils import resolve_obs_groups, store_code_state
@@ -300,6 +300,10 @@ class OnPolicyRunner:
         if hasattr(self.alg, "rnd") and self.alg.rnd:
             saved_dict["rnd_state_dict"] = self.alg.rnd.state_dict()
             saved_dict["rnd_optimizer_state_dict"] = self.alg.rnd_optimizer.state_dict()
+        # [RL+BC] Persist teacher so RLBC runs can be properly resumed
+        if hasattr(self.alg, "teacher") and self.alg.teacher_loaded:
+            saved_dict["teacher_state_dict"] = self.alg.teacher.state_dict()
+            saved_dict["bc_coef"] = self.alg.bc_coef
         torch.save(saved_dict, path)
 
         # Upload model to external logging service
@@ -308,7 +312,30 @@ class OnPolicyRunner:
 
     def load(self, path: str, load_optimizer: bool = True, map_location: str | None = None) -> dict:
         loaded_dict = torch.load(path, weights_only=False, map_location=map_location)
-        # Load model
+
+        # [RL+BC] For PPOWithBC: distinguish bootstrapping from a PPO run vs resuming an RLBC run.
+        if hasattr(self.alg, "teacher"):
+            if "teacher_state_dict" in loaded_dict:
+                # Resuming a prior RLBC checkpoint — restore all components.
+                print("[INFO] Resuming RLBC checkpoint — loading student, teacher, optimizer, and bc_coef.")
+                self.alg.policy.load_state_dict(loaded_dict["model_state_dict"])
+                self.alg.teacher.load_state_dict(loaded_dict["teacher_state_dict"], strict=False)
+                self.alg.teacher.eval()
+                self.alg.teacher_loaded = True
+                if load_optimizer:
+                    self.alg.optimizer.load_state_dict(loaded_dict["optimizer_state_dict"])
+                if "bc_coef" in loaded_dict:
+                    self.alg.bc_coef = float(loaded_dict["bc_coef"])
+                self.current_learning_iteration = loaded_dict["iter"]
+            else:
+                # Bootstrapping from a pure PPO run — load teacher only, fresh student.
+                print("[INFO]] Bootstrapping from PPO checkpoint — loading teacher only.")
+                self.alg.teacher.load_state_dict(loaded_dict["model_state_dict"], strict=False)
+                self.alg.teacher.eval()
+                self.alg.teacher_loaded = True
+            return loaded_dict.get("infos", {})
+
+        # Standard path for PPO / Distillation
         resumed_training = self.alg.policy.load_state_dict(loaded_dict["model_state_dict"])
         # Load RND model if used
         if hasattr(self.alg, "rnd") and self.alg.rnd:
@@ -420,11 +447,24 @@ class OnPolicyRunner:
 
         # Initialize the algorithm
         alg_class = eval(self.alg_cfg.pop("class_name"))
-        alg: PPO = alg_class(actor_critic, device=self.device, **self.alg_cfg, multi_gpu_cfg=self.multi_gpu_cfg)
+        if alg_class.__name__ == "PPOWithBC":
+            alg: PPO = alg_class(
+                actor_critic,
+                teacher_cfg=self.cfg.get("teacher"),
+                obs=obs,
+                obs_groups=self.cfg.get("obs_groups"),
+                num_actions=self.env.num_actions,
+                device=self.device,
+                **self.alg_cfg,
+                multi_gpu_cfg=self.multi_gpu_cfg
+            )
+        else:
+            alg: PPO = alg_class(actor_critic, device=self.device, **self.alg_cfg, multi_gpu_cfg=self.multi_gpu_cfg)
 
         # Initialize the storage
+        storage_type = "rl_bc" if isinstance(alg, PPOWithBC) else "rl"
         alg.init_storage(
-            "rl",
+            storage_type,
             self.env.num_envs,
             self.num_steps_per_env,
             obs,

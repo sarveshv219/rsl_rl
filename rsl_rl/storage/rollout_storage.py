@@ -25,6 +25,7 @@ class RolloutStorage:
             self.actions_log_prob: torch.Tensor
             self.action_mean: torch.Tensor | None = None
             self.action_sigma: torch.Tensor | None = None
+            self.teacher_actions: torch.Tensor | None = None
             self.hidden_states: tuple[HiddenState, HiddenState] = (None, None)
 
         def clear(self) -> None:
@@ -68,6 +69,16 @@ class RolloutStorage:
             self.returns = torch.zeros(num_transitions_per_env, num_envs, 1, device=self.device)
             self.advantages = torch.zeros(num_transitions_per_env, num_envs, 1, device=self.device)
 
+        # For RL+BC distillation
+        if training_type == "rl_bc":
+            self.values = torch.zeros(num_transitions_per_env, num_envs, 1, device=self.device)
+            self.actions_log_prob = torch.zeros(num_transitions_per_env, num_envs, 1, device=self.device)
+            self.mu = torch.zeros(num_transitions_per_env, num_envs, *actions_shape, device=self.device)
+            self.sigma = torch.zeros(num_transitions_per_env, num_envs, *actions_shape, device=self.device)
+            self.returns = torch.zeros(num_transitions_per_env, num_envs, 1, device=self.device)
+            self.advantages = torch.zeros(num_transitions_per_env, num_envs, 1, device=self.device)
+            self.teacher_actions = torch.zeros(num_transitions_per_env, num_envs, *actions_shape, device=self.device)
+
         # For RNN networks
         self.saved_hidden_state_a = None
         self.saved_hidden_state_c = None
@@ -96,6 +107,14 @@ class RolloutStorage:
             self.actions_log_prob[self.step].copy_(transition.actions_log_prob.view(-1, 1))
             self.mu[self.step].copy_(transition.action_mean)
             self.sigma[self.step].copy_(transition.action_sigma)
+
+        # For RL+BC distillation
+        if self.training_type == "rl_bc":
+            self.values[self.step].copy_(transition.values)
+            self.actions_log_prob[self.step].copy_(transition.actions_log_prob.view(-1, 1))
+            self.mu[self.step].copy_(transition.action_mean)
+            self.sigma[self.step].copy_(transition.action_sigma)
+            self.teacher_actions[self.step].copy_(transition.teacher_actions)
 
         # For RNN networks
         self._save_hidden_states(transition.hidden_states)
@@ -160,7 +179,7 @@ class RolloutStorage:
 
     # For reinforcement learning with feedforward networks
     def mini_batch_generator(self, num_mini_batches: int, num_epochs: int = 8) -> Generator:
-        if self.training_type != "rl":
+        if self.training_type not in ["rl", "rl_bc"]:
             raise ValueError("This function is only available for reinforcement learning training.")
         batch_size = self.num_envs * self.num_transitions_per_env
         mini_batch_size = batch_size // num_mini_batches
@@ -177,6 +196,9 @@ class RolloutStorage:
         advantages = self.advantages.flatten(0, 1)
         old_mu = self.mu.flatten(0, 1)
         old_sigma = self.sigma.flatten(0, 1)
+
+        # For RL+BC
+        teacher_actions = self.teacher_actions.flatten(0, 1) if self.training_type == "rl_bc" else None
 
         for epoch in range(num_epochs):
             for i in range(num_mini_batches):
@@ -200,7 +222,7 @@ class RolloutStorage:
                 masks_batch = None
 
                 # Yield the mini-batch
-                yield (
+                b = (
                     obs_batch,
                     actions_batch,
                     target_values_batch,
@@ -215,6 +237,9 @@ class RolloutStorage:
                     ),
                     masks_batch,
                 )
+                if self.training_type == "rl_bc":
+                    b = b + (teacher_actions[batch_idx],)
+                yield b
 
     # For reinforcement learning with recurrent networks
     def recurrent_mini_batch_generator(self, num_mini_batches: int, num_epochs: int = 8) -> Generator:
