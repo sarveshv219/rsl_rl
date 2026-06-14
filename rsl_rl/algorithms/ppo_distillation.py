@@ -3,7 +3,7 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""PPO + Behaviour-Cloning (RL+BC) algorithm.
+"""PPO + Behaviour-Cloning (PPODistill) algorithm.
 
 The student actor is trained with a combined objective::
 
@@ -14,7 +14,7 @@ The student actor is trained with a combined objective::
 where ``bc_loss = MSE(actor_mean, teacher_mean)`` and ``bc_coef(t)`` decays
 over training iterations according to a configurable schedule.
 
-All modified/added sections are marked with ``# [RL+BC]``.
+All modified/added sections are marked with ``# [PPODistill]``.
 """
 
 from __future__ import annotations
@@ -50,14 +50,14 @@ def _step_bc_coef(bc_coef: float, bc_coef_schedule: str, bc_coef_decay: float, b
 # ============================================================================ #
 
 class PPODistillation(PPO):
-    # [RL+BC] ---------------------------------------------------------------- #
+    # [PPODistill] ---------------------------------------------------------------- #
     teacher: ActorCritic | ActorCriticRecurrent
     """Frozen teacher network."""
 
     def __init__(
         self,
         policy: ActorCritic | ActorCriticRecurrent,
-        # [RL+BC] extra params mapped directly from on_policy_runner.py fallback -----------
+        # [PPODistill] extra params mapped directly from on_policy_runner.py fallback -----------
         teacher_cfg: dict | None = None,
         obs: TensorDict | None = None,
         obs_groups: dict[str, list[str]] | None = None,
@@ -87,8 +87,8 @@ class PPODistillation(PPO):
         }
         self.teacher = teacher_class(obs, teacher_obs_groups, num_actions, **teacher_cfg).to(self.device)
         self.teacher.eval()  # Always frozen
-        print(f"[RL+BC Teacher] Actor MLP: {self.teacher.actor}")
-        print(f"[RL+BC Student] Actor MLP: {self.policy.actor}")
+        print(f"[PPODistill Teacher] Actor MLP: {self.teacher.actor}")
+        print(f"[PPODistill Student] Actor MLP: {self.policy.actor}")
 
         self.bc_coef = float(bc_coef)
         self.bc_coef_schedule = bc_coef_schedule
@@ -111,7 +111,7 @@ class PPODistillation(PPO):
         # Standard PPO act — fills transition.actions, values, log_probs, etc.
         student_actions = super().act(obs)
 
-        # [RL+BC] Query teacher (frozen, no grad) ----------------------------- #
+        # [PPODistill] Query teacher (frozen, no grad) ----------------------------- #
         with torch.no_grad():
             self.teacher.act(obs) # Ensure teacher processes input structurally
             teacher_mean = self.teacher.action_mean
@@ -128,7 +128,7 @@ class PPODistillation(PPO):
         mean_value_loss = 0
         mean_surrogate_loss = 0
         mean_entropy = 0
-        mean_bc_loss = 0.0  # [RL+BC]
+        mean_bc_loss = 0.0  # [PPODistill]
         mean_rnd_loss = 0 if self.rnd else None
         mean_symmetry_loss = 0 if self.symmetry else None
 
@@ -208,7 +208,7 @@ class PPODistillation(PPO):
             else:
                 value_loss = (returns_batch - value_batch).pow(2).mean()
 
-            # [RL+BC] Behaviour cloning loss ---------------------------------- #
+            # [PPODistill] Behaviour cloning loss ---------------------------------- #
             if teacher_actions_batch is not None and self.bc_coef > 0.0:
                 teacher_targets = teacher_actions_batch[:original_batch_size].detach()
                 bc_loss = nn.functional.mse_loss(mu_batch, teacher_targets)
@@ -261,7 +261,7 @@ class PPODistillation(PPO):
             mean_value_loss += value_loss.item()
             mean_surrogate_loss += surrogate_loss.item()
             mean_entropy += entropy_batch.mean().item()
-            mean_bc_loss += bc_loss.item()  # [RL+BC]
+            mean_bc_loss += bc_loss.item()  # [PPODistill]
             if mean_rnd_loss is not None:
                 mean_rnd_loss += rnd_loss.item()
             if mean_symmetry_loss is not None:
@@ -271,7 +271,7 @@ class PPODistillation(PPO):
         mean_value_loss /= num_updates
         mean_surrogate_loss /= num_updates
         mean_entropy /= num_updates
-        mean_bc_loss /= num_updates  # [RL+BC]
+        mean_bc_loss /= num_updates  # [PPODistill]
         if mean_rnd_loss is not None:
             mean_rnd_loss /= num_updates
         if mean_symmetry_loss is not None:
@@ -279,7 +279,7 @@ class PPODistillation(PPO):
 
         self.storage.clear()
 
-        # [RL+BC] Advance schedule -------------------------------------------- #
+        # [PPODistill] Advance schedule -------------------------------------------- #
         self.bc_coef = _step_bc_coef(self.bc_coef, self.bc_coef_schedule, self.bc_coef_decay, self.bc_coef_min)
 
         loss_dict = {
