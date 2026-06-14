@@ -46,10 +46,10 @@ def _step_bc_coef(bc_coef: float, bc_coef_schedule: str, bc_coef_decay: float, b
 
 
 # ============================================================================ #
-#  PPOWithBC                                                                    #
+#  PPODistillation                                                                    #
 # ============================================================================ #
 
-class PPOWithBC(PPO):
+class PPODistillation(PPO):
     # [RL+BC] ---------------------------------------------------------------- #
     teacher: ActorCritic | ActorCriticRecurrent
     """Frozen teacher network."""
@@ -72,7 +72,7 @@ class PPOWithBC(PPO):
         super().__init__(policy, **{k: v for k, v in kwargs.items() if k in _PPO_INIT_PARAMS})
 
         if teacher_cfg is None:
-            raise ValueError("PPOWithBC requires a `teacher` configuration dict.")
+            raise ValueError("PPODistillation requires a `teacher` configuration dict.")
 
         teacher_class = eval(teacher_cfg.pop("class_name", "ActorCritic"))
         # Build teacher-specific obs_groups: map both "policy" and "critic" to

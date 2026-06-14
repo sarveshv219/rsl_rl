@@ -14,7 +14,7 @@ from collections import deque
 from tensordict import TensorDict
 
 import rsl_rl
-from rsl_rl.algorithms import PPO, PPOWithBC
+from rsl_rl.algorithms import PPO, PPODistillation
 from rsl_rl.env import VecEnv
 from rsl_rl.modules import ActorCritic, ActorCriticRecurrent, resolve_rnd_config, resolve_symmetry_config
 from rsl_rl.utils import resolve_obs_groups, store_code_state
@@ -313,7 +313,7 @@ class OnPolicyRunner:
     def load(self, path: str, load_optimizer: bool = True, map_location: str | None = None) -> dict:
         loaded_dict = torch.load(path, weights_only=False, map_location=map_location)
 
-        # [RL+BC] For PPOWithBC: distinguish bootstrapping from a PPO run vs resuming an RLBC run.
+        # [RL+BC] For PPODistillation: distinguish bootstrapping from a PPO run vs resuming an RLBC run.
         if hasattr(self.alg, "teacher"):
             if "teacher_state_dict" in loaded_dict:
                 # Resuming a prior RLBC checkpoint — restore all components.
@@ -447,7 +447,7 @@ class OnPolicyRunner:
 
         # Initialize the algorithm
         alg_class = eval(self.alg_cfg.pop("class_name"))
-        if alg_class.__name__ == "PPOWithBC":
+        if alg_class.__name__ == "PPODistillation":
             alg: PPO = alg_class(
                 actor_critic,
                 teacher_cfg=self.cfg.get("teacher"),
@@ -462,7 +462,7 @@ class OnPolicyRunner:
             alg: PPO = alg_class(actor_critic, device=self.device, **self.alg_cfg, multi_gpu_cfg=self.multi_gpu_cfg)
 
         # Initialize the storage
-        storage_type = "rl_bc" if isinstance(alg, PPOWithBC) else "rl"
+        storage_type = "rl_bc" if isinstance(alg, PPODistillation) else "rl"
         alg.init_storage(
             storage_type,
             self.env.num_envs,
