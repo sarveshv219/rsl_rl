@@ -40,12 +40,15 @@ class PPO:
         desired_kl: float = 0.01,
         device: str = "cpu",
         normalize_advantage_per_mini_batch: bool = False,
+        # Optimizer selection
+        optimizer: str = "adam",
         # RND parameters
         rnd_cfg: dict | None = None,
         # Symmetry parameters
         symmetry_cfg: dict | None = None,
         # Distributed training parameters
         multi_gpu_cfg: dict | None = None,
+        **kwargs,
     ) -> None:
         # Device-related parameters
         self.device = device
@@ -101,7 +104,15 @@ class PPO:
         self.policy.to(self.device)
 
         # Create optimizer
-        self.optimizer = optim.Adam(self.policy.parameters(), lr=learning_rate)
+        _optimizer_cls = {
+            "adam": optim.Adam,
+            "adamw": optim.AdamW,
+            "sgd": optim.SGD,
+            "rmsprop": optim.RMSprop,
+        }.get(optimizer.lower())
+        if _optimizer_cls is None:
+            raise ValueError(f"Unknown optimizer '{optimizer}'. Choose from: adam, adamw, sgd, rmsprop.")
+        self.optimizer = _optimizer_cls(self.policy.parameters(), lr=learning_rate)
 
         # Create rollout storage
         self.storage: RolloutStorage | None = None

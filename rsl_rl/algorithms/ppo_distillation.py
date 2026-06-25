@@ -11,7 +11,8 @@ The student actor is trained with a combined objective::
          + bc_coef(t) * bc_loss
          - entropy_coef * entropy
 
-where ``bc_loss = MSE(actor_mean, teacher_mean)`` and ``bc_coef(t)`` decays
+where ``bc_loss`` is either MSE(actor_mean, teacher_mean) or KL(N(teacher_mean, σ_s) ‖ N(actor_mean, σ_s)),
+and ``bc_coef(t)`` decays
 over training iterations according to a configurable schedule.
 
 All modified/added sections are marked with ``# [PPODistill]``.
@@ -66,6 +67,7 @@ class PPODistillation(PPO):
         bc_coef_schedule: str = "linear",
         bc_coef_decay: float = 1e-4,
         bc_coef_min: float = 0.0,
+        bc_loss_fn: str = "mse",
         teacher_loaded: bool = False,
         **kwargs,
     ) -> None:
@@ -94,7 +96,9 @@ class PPODistillation(PPO):
         self.bc_coef_schedule = bc_coef_schedule
         self.bc_coef_decay = float(bc_coef_decay)
         self.bc_coef_min = float(bc_coef_min)
+        self.bc_loss_fn = bc_loss_fn
         self.teacher_loaded = teacher_loaded
+        print("[INFO] PPODistillation initialized with bc_coef:", self.bc_coef, "schedule:", self.bc_coef_schedule, "decay:", self.bc_coef_decay, "min:", self.bc_coef_min, "loss_fn:", self.bc_loss_fn)
 
     def init_storage(
         self,
@@ -113,9 +117,11 @@ class PPODistillation(PPO):
 
         # [PPODistill] Query teacher (frozen, no grad) ----------------------------- #
         with torch.no_grad():
-            self.teacher.act(obs) # Ensure teacher processes input structurally
+            self.teacher.act(obs)
             teacher_mean = self.teacher.action_mean
-        self.transition.teacher_actions = teacher_mean.detach()
+            teacher_std  = self.teacher.action_std
+        self.transition.teacher_actions    = teacher_mean.detach()
+        self.transition.teacher_action_stds = teacher_std.detach()
         # --------------------------------------------------------------------- #
 
         return student_actions
@@ -140,7 +146,7 @@ class PPODistillation(PPO):
         for batch in generator:
             obs_batch, actions_batch, target_values_batch, advantages_batch, returns_batch, \
             old_actions_log_prob_batch, old_mu_batch, old_sigma_batch, hidden_states_batch, \
-            masks_batch, teacher_actions_batch = batch
+            masks_batch, teacher_actions_batch, teacher_action_stds_batch = batch
 
             num_aug = 1
             original_batch_size = obs_batch.batch_size[0]
@@ -211,10 +217,23 @@ class PPODistillation(PPO):
             # [PPODistill] Behaviour cloning loss ---------------------------------- #
             if teacher_actions_batch is not None and self.bc_coef > 0.0:
                 teacher_targets = teacher_actions_batch[:original_batch_size].detach()
-                bc_loss = nn.functional.mse_loss(mu_batch, teacher_targets)
+                if self.bc_loss_fn == "mse":
+                    bc_loss = nn.functional.mse_loss(mu_batch, teacher_targets)
+                elif self.bc_loss_fn == "kl":
+                    # Full Gaussian KL(N(μ_t, σ_t) ‖ N(μ_s, σ_s))
+                    sigma_t = teacher_action_stds_batch[:original_batch_size].detach()
+                    sigma_s = sigma_batch
+                    bc_loss = (
+                        torch.log(sigma_s / sigma_t.clamp(min=1e-8))
+                        + (sigma_t.pow(2) + (teacher_targets - mu_batch).pow(2))
+                        / (2.0 * sigma_s.pow(2).clamp(min=1e-7))
+                        - 0.5
+                    ).sum(-1).mean()
+                else:
+                    raise ValueError(f"Unknown bc_loss_fn '{self.bc_loss_fn}'. Choose 'mse' or 'kl'.")
             else:
                 bc_loss = torch.tensor(0.0, device=self.device)
-            # -----------------------------------------------------------------#
+            # -------------------------------------------------------------------- #
 
             loss = surrogate_loss + self.value_loss_coef * value_loss - self.entropy_coef * entropy_batch.mean() + self.bc_coef * bc_loss
 

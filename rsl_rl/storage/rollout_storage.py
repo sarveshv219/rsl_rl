@@ -26,6 +26,7 @@ class RolloutStorage:
             self.action_mean: torch.Tensor | None = None
             self.action_sigma: torch.Tensor | None = None
             self.teacher_actions: torch.Tensor | None = None
+            self.teacher_action_stds: torch.Tensor | None = None
             self.hidden_states: tuple[HiddenState, HiddenState] = (None, None)
 
         def clear(self) -> None:
@@ -78,6 +79,7 @@ class RolloutStorage:
             self.returns = torch.zeros(num_transitions_per_env, num_envs, 1, device=self.device)
             self.advantages = torch.zeros(num_transitions_per_env, num_envs, 1, device=self.device)
             self.teacher_actions = torch.zeros(num_transitions_per_env, num_envs, *actions_shape, device=self.device)
+            self.teacher_action_stds = torch.zeros(num_transitions_per_env, num_envs, *actions_shape, device=self.device)
 
         # For RNN networks
         self.saved_hidden_state_a = None
@@ -115,6 +117,7 @@ class RolloutStorage:
             self.mu[self.step].copy_(transition.action_mean)
             self.sigma[self.step].copy_(transition.action_sigma)
             self.teacher_actions[self.step].copy_(transition.teacher_actions)
+            self.teacher_action_stds[self.step].copy_(transition.teacher_action_stds)
 
         # For RNN networks
         self._save_hidden_states(transition.hidden_states)
@@ -199,6 +202,7 @@ class RolloutStorage:
 
         # For RL+BC
         teacher_actions = self.teacher_actions.flatten(0, 1) if self.training_type == "rl_bc" else None
+        teacher_action_stds = self.teacher_action_stds.flatten(0, 1) if self.training_type == "rl_bc" else None
 
         for epoch in range(num_epochs):
             for i in range(num_mini_batches):
@@ -238,7 +242,7 @@ class RolloutStorage:
                     masks_batch,
                 )
                 if self.training_type == "rl_bc":
-                    b = b + (teacher_actions[batch_idx],)
+                    b = b + (teacher_actions[batch_idx], teacher_action_stds[batch_idx])
                 yield b
 
     # For reinforcement learning with recurrent networks
